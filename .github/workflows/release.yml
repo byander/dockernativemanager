@@ -57,7 +57,7 @@ jobs:
             librsvg2-dev patchelf libssl-dev pkg-config fakeroot rpm
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build and Package Tauri App
         uses: tauri-apps/tauri-action@v0
