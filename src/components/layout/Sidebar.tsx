@@ -276,12 +276,14 @@ const Sidebar = () => {
       }
       
       await createDockerContext(newContext.name, newContext.host);
-      showSuccess(`Context ${newContext.name} created`);
+      await useDockerContext(newContext.name);
+      showSuccess(`Context ${newContext.name} created and activated`);
       setNewContext({ name: '', host: '' });
       setSelectedSshKey('');
       setConnectionTestResult(null);
       setShowSshConfig(false);
       await fetchContexts();
+      await manageService('reconnect');
     } catch (err) {
       showError(`Error creating context: ${err}`);
     } finally {

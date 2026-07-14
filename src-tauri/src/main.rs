@@ -17,6 +17,7 @@ mod models;
 mod utils;
 mod commands;
 mod tasks;
+mod docker_context;
 
 use std::collections::HashMap;
 use utils::TerminalSenders;
