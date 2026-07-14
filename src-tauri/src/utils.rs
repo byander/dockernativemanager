@@ -18,12 +18,14 @@ use std::io::Read;
 use crate::docker_context;
 
 pub static IS_STOPPED_INTENTIONALLY: AtomicBool = AtomicBool::new(false);
+pub static WSL_DOCKER_DETECTED: AtomicBool = AtomicBool::new(false);
 
 pub type TerminalSenders = Mutex<HashMap<String, mpsc::Sender<String>>>;
 
 // Global SSH tunnel process handle
 lazy_static::lazy_static! {
     static ref SSH_TUNNEL: Mutex<Option<SshTunnel>> = Mutex::new(None);
+    static ref WSL_DOCKER: Mutex<Option<WslForwarder>> = Mutex::new(None);
 }
 
 struct SshTunnel {
@@ -50,6 +52,159 @@ pub fn stop_ssh_tunnel() {
         let _ = std::fs::remove_file(&t.local_addr);
         // Prevent Drop from running again
         std::mem::forget(t);
+    }
+}
+
+#[cfg(windows)]
+fn run_wsl(args: &[&str]) -> Result<std::process::Output, std::io::Error> {
+    use std::process::Command;
+    use std::os::windows::process::CommandExt;
+    let make = |exe: &str| {
+        let mut c = Command::new(exe);
+        c.args(args)
+         .stdout(std::process::Stdio::null())
+         .stderr(std::process::Stdio::null())
+         .creation_flags(0x08000000);
+        c
+    };
+    make("wsl.exe").output().or_else(|_| make("C:\\Windows\\System32\\wsl.exe").output())
+}
+
+#[cfg(windows)]
+fn try_wsl_docker() -> bool {
+    if WSL_DOCKER_DETECTED.load(Ordering::Relaxed) {
+        return true;
+    }
+    let ok = run_wsl(&["docker", "version", "--format", "{{.Server.Version}}"])
+        .map_or(false, |o| o.status.success())
+        ||
+        run_wsl(&["python3", "-c",
+            "import socket;s=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect('/var/run/docker.sock');s.close()"
+        ]).map_or(false, |o| o.status.success());
+    if ok {
+        WSL_DOCKER_DETECTED.store(true, Ordering::Relaxed);
+    }
+    ok
+}
+
+#[cfg(windows)]
+fn write_wsl_script(port: u16) -> Result<String, String> {
+    let script = format!(
+r#"import socket, threading, sys, os
+
+def forward(a, b):
+    try:
+        while True:
+            d = a.recv(4096)
+            if not d:
+                break
+            b.sendall(d)
+    except:
+        pass
+    finally:
+        try: a.close()
+        except: pass
+        try: b.close()
+        except: pass
+
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', {}))
+s.listen(5)
+sys.stdout.write('R')
+sys.stdout.flush()
+while True:
+    c, _ = s.accept()
+    d = socket.socket(socket.AF_UNIX)
+    d.connect('/var/run/docker.sock')
+    threading.Thread(target=forward, args=(c, d), daemon=True).start()
+    threading.Thread(target=forward, args=(d, c), daemon=True).start()
+"#, port);
+
+    let script_path = std::env::temp_dir().join("docker_nm_wsl_proxy.py");
+    std::fs::write(&script_path, &script)
+        .map_err(|e| format!("Failed to write WSL proxy script: {}", e))?;
+
+    // Convert Windows path to WSL path: C:\Users\... → /mnt/c/Users/...
+    let wsl_path = script_path.to_string_lossy()
+        .replace('\\', "/")
+        .replacen("C:", "/mnt/c", 1)
+        .replacen("D:", "/mnt/d", 1)
+        .replacen("E:", "/mnt/e", 1);
+    Ok(wsl_path)
+}
+
+#[cfg(windows)]
+fn start_wsl_forwarder(port: u16) -> Result<Child, String> {
+    use std::process::Command;
+    use std::os::windows::process::CommandExt;
+
+    let wsl_path = write_wsl_script(port)?;
+
+    let mut child = Command::new("wsl.exe")
+        .args(["python3", &wsl_path])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x08000000)
+        .spawn()
+        .or_else(|_| {
+            Command::new("C:\\Windows\\System32\\wsl.exe")
+                .args(["python3", &wsl_path])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x08000000)
+                .spawn()
+        })
+        .map_err(|e| format!("Failed to start WSL Docker forwarder: {}", e))?;
+
+    let mut stdout = child.stdout.take().ok_or("No stdout from WSL forwarder")?;
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(10);
+    let mut buf = [0u8; 1];
+
+    loop {
+        match stdout.read_exact(&mut buf) {
+            Ok(()) if buf[0] == b'R' => break,
+            Ok(()) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("WSL forwarder failed to send ready signal.".to_string());
+            }
+        }
+
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("WSL Docker forwarder timed out.".to_string());
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    Ok(child)
+}
+
+struct WslForwarder {
+    child: Child,
+    addr: String,
+}
+
+impl Drop for WslForwarder {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub fn stop_wsl_forwarder() {
+    let mut fwd = WSL_DOCKER.lock().unwrap();
+    if let Some(mut f) = fwd.take() {
+        let _ = f.child.kill();
+        let _ = f.child.wait();
+        std::mem::forget(f);
     }
 }
 
@@ -218,6 +373,69 @@ fn connect_via_addr(addr: &str) -> Result<Docker, bollard::errors::Error> {
     Docker::connect_with_http(addr, 120, bollard::API_DEFAULT_VERSION)
 }
 
+#[cfg(windows)]
+fn try_connect_wsl() -> Option<Result<Docker, String>> {
+    if !try_wsl_docker() {
+        return None;
+    }
+
+    let mut fwd = WSL_DOCKER.lock().ok()?;
+
+    // Test existing forwarder
+    if let Some(ref f) = *fwd {
+        if std::net::TcpStream::connect(&f.addr).is_ok() {
+            return Some(Docker::connect_with_http(&f.addr, 120, bollard::API_DEFAULT_VERSION)
+                .map_err(|e| e.to_string()));
+        }
+    }
+
+    // Kill existing forwarder if broken
+    if let Some(mut f) = fwd.take() {
+        let _ = f.child.kill();
+        let _ = f.child.wait();
+        std::mem::forget(f);
+    }
+    drop(fwd);
+
+    // Start new forwarder
+    let port = find_available_port().ok()?;
+    let child = start_wsl_forwarder(port).ok()?;
+    let addr = format!("127.0.0.1:{}", port);
+
+    *WSL_DOCKER.lock().unwrap() = Some(WslForwarder {
+        child,
+        addr: addr.clone(),
+    });
+
+    // Wait for TCP to be ready
+    let start = std::time::Instant::now();
+    loop {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(5) {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Some(Docker::connect_with_http(&addr, 120, bollard::API_DEFAULT_VERSION)
+        .map_err(|e| e.to_string()))
+}
+
+#[cfg(windows)]
+fn connect_with_fallback() -> Result<Docker, String> {
+    if let Some(result) = try_connect_wsl() {
+        return result;
+    }
+    Docker::connect_with_local_defaults().map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn connect_with_fallback() -> Result<Docker, String> {
+    Docker::connect_with_local_defaults().map_err(|e| e.to_string())
+}
+
 pub fn get_docker() -> Result<Docker, String> {
     if IS_STOPPED_INTENTIONALLY.load(Ordering::SeqCst) {
         return Err("Docker is intentionally stopped".into());
@@ -239,12 +457,12 @@ pub fn get_docker() -> Result<Docker, String> {
 
     if host.is_empty() {
         stop_ssh_tunnel();
-        return Docker::connect_with_local_defaults().map_err(|e| e.to_string());
+        return connect_with_fallback();
     }
 
     if host.starts_with("unix://") || host.starts_with("/") {
         stop_ssh_tunnel();
-        Docker::connect_with_local_defaults().map_err(|e| e.to_string())
+        connect_with_fallback()
     } else if host.starts_with("ssh://") {
         let mut tunnel_lock = SSH_TUNNEL.lock().unwrap();
 
@@ -286,7 +504,7 @@ pub fn get_docker() -> Result<Docker, String> {
         }
         #[cfg(not(windows))]
         {
-            Docker::connect_with_local_defaults().map_err(|e| e.to_string())
+            connect_with_fallback()
         }
     } else if host.starts_with("tcp://") {
         stop_ssh_tunnel();
@@ -294,6 +512,6 @@ pub fn get_docker() -> Result<Docker, String> {
         Docker::connect_with_http(addr, 120, bollard::API_DEFAULT_VERSION).map_err(|e| e.to_string())
     } else {
         stop_ssh_tunnel();
-        Docker::connect_with_local_defaults().map_err(|e| e.to_string())
+        connect_with_fallback()
     }
 }

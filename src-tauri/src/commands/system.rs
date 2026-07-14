@@ -9,7 +9,7 @@
  */
 
 use crate::models::SystemInfo;
-use crate::utils::{get_docker, stop_ssh_tunnel, IS_STOPPED_INTENTIONALLY};
+use crate::utils::{get_docker, stop_ssh_tunnel, stop_wsl_forwarder, IS_STOPPED_INTENTIONALLY};
 use crate::docker_context;
 use std::sync::atomic::Ordering;
 
@@ -124,8 +124,9 @@ pub async fn manage_docker_service(action: String) -> Result<String, String> {
         },
         "reconnect" => {
             IS_STOPPED_INTENTIONALLY.store(false, Ordering::SeqCst);
-            // Stop any existing SSH tunnel so it will be re-established on next get_docker() call
+            // Stop tunnels so they will be re-established on next get_docker() call
             stop_ssh_tunnel();
+            stop_wsl_forwarder();
             return Ok("Reconnection logic triggered".into());
         },
         _ => return Err("Invalid action".to_string()),
