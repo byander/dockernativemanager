@@ -60,7 +60,9 @@ fn start_ssh_tunnel_raw(ssh_url: &str) -> Result<(Child, String), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() % 100000;
-    let socket_path = format!("/tmp/docker-nm-ssh-{}-{}.sock", std::process::id(), unique_id);
+    let mut temp = std::env::temp_dir();
+    temp.push(format!("docker-nm-ssh-{}-{}.sock", std::process::id(), unique_id));
+    let socket_path = temp.to_string_lossy().to_string();
     
     // Remove stale socket file if it exists
     if std::path::Path::new(&socket_path).exists() {
@@ -214,6 +216,17 @@ pub fn get_docker() -> Result<Docker, String> {
 
         Docker::connect_with_socket(&socket_to_return, 120, bollard::API_DEFAULT_VERSION)
             .map_err(|e| e.to_string())
+    } else if host.starts_with("npipe://") {
+        stop_ssh_tunnel();
+        #[cfg(windows)]
+        {
+            Docker::connect_with_named_pipe(&host, 120, bollard::API_DEFAULT_VERSION)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(not(windows))]
+        {
+            Docker::connect_with_local_defaults().map_err(|e| e.to_string())
+        }
     } else if host.starts_with("tcp://") {
         stop_ssh_tunnel();
         let addr = host.trim_start_matches("tcp://");
