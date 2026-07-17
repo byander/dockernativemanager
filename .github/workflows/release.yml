@@ -1,46 +1,34 @@
-name: Release
+name: Release Build
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and upload assets'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Validate tag version matches app version
+      - name: Resolve tag
+        id: tag
         run: |
-          TAG_VERSION="${{ github.ref_name }}"
-          TAG_VERSION="${TAG_VERSION#v}"
-
-          APP_VERSION="$(jq -r '.version' src-tauri/tauri.conf.json)"
-
-          if [ -z "$APP_VERSION" ] || [ "$APP_VERSION" = "null" ]; then
-            echo "Could not read app version from src-tauri/tauri.conf.json"
-            exit 1
-          fi
-
-          if [ "$TAG_VERSION" != "$APP_VERSION" ]; then
-            echo "Tag version ($TAG_VERSION) does not match app version ($APP_VERSION)."
-            exit 1
-          fi
-
-      - name: Detect pre-release
-        id: prerelease
-        run: |
-          if [[ "${{ github.ref_name }}" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -49,7 +37,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: "pnpm"
+          cache: pnpm
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -64,23 +52,27 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and Package Tauri App
-        uses: tauri-apps/tauri-action@v1
+      - name: Build Tauri App
+        run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: Upload AppImage, deb, rpm to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # Arch Linux package is built in a dedicated step below (custom PKGBUILD + makepkg).
-          args: --bundles appimage,deb,rpm
-          tagName: ${{ github.ref_name }}
-          releaseName: "Docker Native Manager ${{ github.ref_name }}"
-          releaseBody: "See the assets to download this version and install."
-          releaseDraft: false
-          prerelease: ${{ steps.prerelease.outputs.prerelease }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+
+          for dir in appimage deb rpm; do
+            for f in "$BUNDLE_DIR/$dir/"*; do
+              [ -f "$f" ] && gh release upload "$TAG" "$f" --clobber
+            done
+          done
 
       - name: Package for Arch Linux and Upload
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           mkdir -p dist-arch
 
           ARCH_DEPENDS=('cairo' 'gdk-pixbuf2' 'glib2' 'gtk3' 'hicolor-icon-theme' 'libsoup3' 'webkit2gtk-4.1')
@@ -141,8 +133,7 @@ jobs:
 
           ARCH_DEPENDS_PKGBUILD=$(printf "'%s'\n" "${ARCH_DEPENDS[@]}" | paste -sd' ' -)
 
-          PKG_VERSION="${{ github.ref_name }}"
-          PKG_VERSION="${PKG_VERSION#v}"
+          PKG_VERSION="${TAG#v}"
           PKG_VERSION="${PKG_VERSION//-/.}"
 
           BIN_PATH="src-tauri/target/release/docker-native-manager"
@@ -192,7 +183,6 @@ jobs:
           }
           EOF
 
-          # Using archlinux:latest instead of base-devel as it is more reliable on Docker Hub
           docker run --rm \
             -v "$PWD/dist-arch:/build" \
             -w /build \
@@ -207,12 +197,13 @@ jobs:
             "
 
           ARCH_PKG=$(ls dist-arch/*.pkg.tar.zst)
-          gh release upload "${{ github.ref_name }}" "$ARCH_PKG" --clobber
+          gh release upload "$TAG" "$ARCH_PKG" --clobber
 
       - name: Package tar.gz and Upload
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           mkdir -p dist-targz
 
           BIN_PATH="src-tauri/target/release/docker-native-manager"
@@ -221,8 +212,7 @@ jobs:
             exit 1
           fi
 
-          PKG_VERSION="${{ github.ref_name }}"
-          PKG_VERSION="${PKG_VERSION#v}"
+          PKG_VERSION="${TAG#v}"
 
           cp "$BIN_PATH" dist-targz/
           cp LICENSE dist-targz/
@@ -230,4 +220,4 @@ jobs:
           TAR_GZ="Docker.Native.Manager_${PKG_VERSION}_amd64.tar.gz"
           tar -C dist-targz -czf "$TAR_GZ" docker-native-manager LICENSE
 
-          gh release upload "${{ github.ref_name }}" "$TAR_GZ" --clobber
+          gh release upload "$TAG" "$TAR_GZ" --clobber
