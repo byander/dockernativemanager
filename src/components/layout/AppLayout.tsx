@@ -3,25 +3,54 @@
  * Project: docker-native-manager
  * Created: 2026-03-13
  * 
- * Last Modified: Tue Mar 17 2026
+ * Last Modified: Thu Jul 17 2026
  * Modified By: Pedro Farias
  * 
  */
 
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Sidebar from "./Sidebar";
 import { X, Minus, Square, ShieldAlert } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { useDocker } from "@/context/DockerContext";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+// Resize handle configuration
+const RESIZE_EDGE_SIZE = 6; // px - thickness of edge resize handles
+const RESIZE_CORNER_SIZE = 12; // px - size of corner resize handles
+
+type ResizeDirection = "North" | "South" | "East" | "West" | "NorthEast" | "NorthWest" | "SouthEast" | "SouthWest";
+
+const RESIZE_HANDLES: { direction: ResizeDirection; style: React.CSSProperties }[] = [
+  // Edges
+  { direction: "North", style: { top: 0, left: RESIZE_CORNER_SIZE, right: RESIZE_CORNER_SIZE, height: RESIZE_EDGE_SIZE, cursor: "n-resize" } },
+  { direction: "South", style: { bottom: 0, left: RESIZE_CORNER_SIZE, right: RESIZE_CORNER_SIZE, height: RESIZE_EDGE_SIZE, cursor: "s-resize" } },
+  { direction: "West", style: { left: 0, top: RESIZE_CORNER_SIZE, bottom: RESIZE_CORNER_SIZE, width: RESIZE_EDGE_SIZE, cursor: "w-resize" } },
+  { direction: "East", style: { right: 0, top: RESIZE_CORNER_SIZE, bottom: RESIZE_CORNER_SIZE, width: RESIZE_EDGE_SIZE, cursor: "e-resize" } },
+  // Corners
+  { direction: "NorthWest", style: { top: 0, left: 0, width: RESIZE_CORNER_SIZE, height: RESIZE_CORNER_SIZE, cursor: "nw-resize" } },
+  { direction: "NorthEast", style: { top: 0, right: 0, width: RESIZE_CORNER_SIZE, height: RESIZE_CORNER_SIZE, cursor: "ne-resize" } },
+  { direction: "SouthWest", style: { bottom: 0, left: 0, width: RESIZE_CORNER_SIZE, height: RESIZE_CORNER_SIZE, cursor: "sw-resize" } },
+  { direction: "SouthEast", style: { bottom: 0, right: 0, width: RESIZE_CORNER_SIZE, height: RESIZE_CORNER_SIZE, cursor: "se-resize" } },
+];
+
 const AppLayout = ({ children }: { children: React.ReactNode }) => {
   const [isMaximized, setIsMaximized] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pathname } = useLocation();
   const { isConnected } = useDocker();
+
+  const handleResizeDrag = useCallback(async (direction: ResizeDirection, e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await getCurrentWindow().startResizeDragging(direction);
+    } catch (err) {
+      console.error(`Failed to start resize dragging (${direction})`, err);
+    }
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -67,6 +96,20 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       id="root-container"
       className="flex h-full w-full bg-background overflow-hidden transition-colors duration-300 relative"
     >
+      {/* Programmatic resize handles for Wayland compatibility (KDE Plasma 6, etc.) */}
+      {!isMaximized && RESIZE_HANDLES.map(({ direction, style }) => (
+        <div
+          key={direction}
+          style={{
+            position: "fixed",
+            zIndex: 9999,
+            background: "transparent",
+            ...style,
+          }}
+          onPointerDown={(e) => handleResizeDrag(direction, e)}
+        />
+      ))}
+
       <Sidebar />
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden relative">
         {/* Full Header Drag Handle */}
@@ -80,7 +123,7 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
             // Only drag on left click and avoid triggering on buttons
             if (e.buttons === 1 && (e.target as HTMLElement).closest('button') === null) {
               try {
-                await getCurrentWindow()[isMaximized ? 'unmaximize' : 'maximize']();
+                await getCurrentWindow().startDragging();
               } catch (err) {
                 console.error("Failed to start dragging", err);
               }
