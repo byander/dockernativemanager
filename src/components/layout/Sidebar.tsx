@@ -161,7 +161,7 @@ const Sidebar = () => {
   const checkForUpdates = async (silent = true, forceOpen = false) => {
     setIsCheckingUpdates(true);
     try {
-      const response = await fetch('https://api.github.com/repos/pedrofariasx/dockernativemanager/releases/latest');
+      const response = await fetch('https://api.github.com/repos/byander/dockernativemanager/releases/latest');
       if (response.ok) {
         const data = await response.json();
         const latest = data.tag_name;
@@ -197,7 +197,7 @@ const Sidebar = () => {
   const fetchContributors = async () => {
     setIsLoadingContributors(true);
     try {
-      const response = await fetch('https://api.github.com/repos/pedrofariasx/dockernativemanager/contributors');
+      const response = await fetch('https://api.github.com/repos/byander/dockernativemanager/contributors');
       if (response.ok) {
         const data = await response.json();
         setContributors(data);
@@ -276,12 +276,14 @@ const Sidebar = () => {
       }
       
       await createDockerContext(newContext.name, newContext.host);
-      showSuccess(`Context ${newContext.name} created`);
+      await useDockerContext(newContext.name);
+      showSuccess(`Context ${newContext.name} created and activated`);
       setNewContext({ name: '', host: '' });
       setSelectedSshKey('');
       setConnectionTestResult(null);
       setShowSshConfig(false);
       await fetchContexts();
+      await manageService('reconnect');
     } catch (err) {
       showError(`Error creating context: ${err}`);
     } finally {
@@ -715,7 +717,7 @@ const Sidebar = () => {
                 <Button 
                   variant="outline" 
                   className="w-full justify-between gap-2 h-11 border-primary/20 hover:bg-primary/5 hover:border-primary/40"
-                  onClick={() => openExternalLink('https://github.com/pedrofariasx/dockernativemanager')}
+                  onClick={() => openExternalLink('https://github.com/byander/dockernativemanager')}
                 >
                   <div className="flex items-center gap-3">
                     <Github className="w-4 h-4" />

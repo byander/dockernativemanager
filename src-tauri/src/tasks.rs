@@ -315,28 +315,37 @@ struct RemoteHostStats {
 
 /// Check if the current Docker context is remote (SSH)
 fn is_remote_context() -> bool {
-    let output = std::process::Command::new("docker")
+    let host = match std::process::Command::new("docker")
         .args(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"])
-        .output();
-    
-    match output {
+        .output()
+    {
         Ok(out) if out.status.success() => {
-            let host = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            host.starts_with("ssh://") || host.starts_with("tcp://")
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
         }
-        _ => false,
-    }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::docker_context::get_current_context_endpoint().unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+
+    host.starts_with("ssh://") || host.starts_with("tcp://")
 }
 
 /// Get host stats from remote machine via SSH
 fn get_remote_host_stats() -> Option<RemoteHostStats> {
-    // Get the SSH host from current docker context
-    let output = std::process::Command::new("docker")
+    let host = match std::process::Command::new("docker")
         .args(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"])
         .output()
-        .ok()?;
-    
-    let host = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::docker_context::get_current_context_endpoint().unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+
     if !host.starts_with("ssh://") {
         return None;
     }
@@ -345,6 +354,11 @@ fn get_remote_host_stats() -> Option<RemoteHostStats> {
     
     // Build SSH command to get /proc/stat and /proc/meminfo
     let mut cmd = std::process::Command::new("ssh");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
     cmd.arg("-o").arg("ConnectTimeout=5")
        .arg("-o").arg("BatchMode=yes");
 

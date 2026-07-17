@@ -1,6 +1,6 @@
 {
   "name": "docker-native-manager",
-  "version": "1.13.1",
+  "version": "1.0.0-beta.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "pnpm tauri dev"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

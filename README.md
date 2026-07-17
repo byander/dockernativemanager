@@ -1,3 +1,5 @@
+> **Fork** of [pedrofariasx/dockernativemanager](https://github.com/pedrofariasx/dockernativemanager) — created to add full Windows support.
+
 # Docker Native Manager
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.1-blue?logo=tauri)](https://tauri.app)
@@ -8,6 +10,8 @@
 A modern, native, and blazing-fast desktop application to manage your Docker environments, built with **Tauri v2**, **React**, **TypeScript**, and **Rust**.
 
 ![alt text](<dockernm.png>)
+
+## 
 
 ## ✨ Features
 
@@ -66,11 +70,15 @@ sudo pacman -U ./docker-native-manager-x.y.z-x86_64.pkg.tar.zst
 chmod +x docker-native-manager-x.y.z-x86_64.AppImage && ./docker-native-manager-x.y.z-x86_64.AppImage
 ```
 
+### Windows Installation
+
+Download the latest .exe or .msi installer from the Releases (https://github.com/byander/dockernativemanager/releases) page.
+
 ### Manual Installation
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/pedrofariasx/dockernativemanager.git
+   git clone https://github.com/byander/dockernativemanager.git
    cd dockernativemanager
    ```
 
@@ -110,7 +118,7 @@ The resulting binaries will be placed in the `src-tauri/target/release/bundle` d
 ## 🤝 Contributing
 
 Contributions, issues, and feature requests are welcome!
-Feel free to check [issues page](https://github.com/pedrofariasx/dockernativemanager/issues).
+Feel free to check [issues page](https://github.com/byander/dockernativemanager/issues).
 
 ## 📝 License
 

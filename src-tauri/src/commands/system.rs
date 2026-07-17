@@ -9,7 +9,8 @@
  */
 
 use crate::models::SystemInfo;
-use crate::utils::{get_docker, stop_ssh_tunnel, IS_STOPPED_INTENTIONALLY};
+use crate::utils::{get_docker, stop_ssh_tunnel, stop_wsl_forwarder, IS_STOPPED_INTENTIONALLY};
+use crate::docker_context;
 use std::sync::atomic::Ordering;
 
 #[tauri::command]
@@ -123,8 +124,9 @@ pub async fn manage_docker_service(action: String) -> Result<String, String> {
         },
         "reconnect" => {
             IS_STOPPED_INTENTIONALLY.store(false, Ordering::SeqCst);
-            // Stop any existing SSH tunnel so it will be re-established on next get_docker() call
+            // Stop tunnels so they will be re-established on next get_docker() call
             stop_ssh_tunnel();
+            stop_wsl_forwarder();
             return Ok("Reconnection logic triggered".into());
         },
         _ => return Err("Invalid action".to_string()),
@@ -150,59 +152,60 @@ pub async fn manage_docker_service(action: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn list_docker_contexts() -> Result<Vec<crate::models::DockerContextInfo>, String> {
-    let output = std::process::Command::new("docker")
+    match std::process::Command::new("docker")
         .args(["context", "ls", "--format", "{{json .}}"])
         .output()
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut contexts = Vec::new();
 
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            for line in stdout.lines() {
+                if line.trim().is_empty() { continue; }
+                let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+
+                contexts.push(crate::models::DockerContextInfo {
+                    name: v["Name"].as_str().unwrap_or_default().to_string(),
+                    description: v["Description"].as_str().unwrap_or_default().to_string(),
+                    docker_endpoint: v["DockerEndpoint"].as_str().unwrap_or_default().to_string(),
+                    is_active: v["Current"].as_bool().unwrap_or(false),
+                });
+            }
+
+            Ok(contexts)
+        }
+        Ok(output) => Err(String::from_utf8_lossy(&output.stderr).to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => docker_context::list_contexts(),
+        Err(e) => Err(format!("Failed to execute docker: {}", e)),
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut contexts = Vec::new();
-
-    for line in stdout.lines() {
-        if line.trim().is_empty() { continue; }
-        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-        
-        contexts.push(crate::models::DockerContextInfo {
-            name: v["Name"].as_str().unwrap_or_default().to_string(),
-            description: v["Description"].as_str().unwrap_or_default().to_string(),
-            docker_endpoint: v["DockerEndpoint"].as_str().unwrap_or_default().to_string(),
-            is_active: v["Current"].as_bool().unwrap_or(false),
-        });
-    }
-
-    Ok(contexts)
 }
 
 #[tauri::command]
 pub async fn use_docker_context(name: String) -> Result<(), String> {
-    let output = std::process::Command::new("docker")
+    match std::process::Command::new("docker")
         .args(["context", "use", &name])
         .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(String::from_utf8_lossy(&output.stderr).to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => docker_context::set_current_context(&name),
+        Err(e) => Err(format!("Failed to execute docker: {}", e)),
     }
-
-    Ok(())
 }
 
 #[tauri::command]
 pub async fn create_docker_context(name: String, host: String) -> Result<(), String> {
-    let output = std::process::Command::new("docker")
+    match std::process::Command::new("docker")
         .args(["context", "create", &name, "--docker", &format!("host={}", host)])
         .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(String::from_utf8_lossy(&output.stderr).to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            docker_context::create_context(&name, &host)
+        }
+        Err(e) => Err(format!("Failed to execute docker: {}", e)),
     }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -211,16 +214,15 @@ pub async fn remove_docker_context(name: String) -> Result<(), String> {
         return Err("Cannot remove default context".to_string());
     }
 
-    let output = std::process::Command::new("docker")
+    match std::process::Command::new("docker")
         .args(["context", "rm", &name])
         .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(String::from_utf8_lossy(&output.stderr).to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => docker_context::remove_context(&name),
+        Err(e) => Err(format!("Failed to execute docker: {}", e)),
     }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -230,6 +232,11 @@ pub async fn test_docker_connection(host: String, ssh_key: Option<String>) -> Re
         let url_part = host.trim_start_matches("ssh://");
         
         let mut ssh_cmd = std::process::Command::new("ssh");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            ssh_cmd.creation_flags(0x08000000);
+        }
         ssh_cmd
             .arg("-o").arg("StrictHostKeyChecking=accept-new")
             .arg("-o").arg("ConnectTimeout=10")
