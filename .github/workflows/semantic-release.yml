@@ -194,7 +194,7 @@ jobs:
           pkgrel=1
           pkgdesc="A powerful, native, cross-platform GUI for managing Docker environments"
           arch=('x86_64')
-          url="https://github.com/pedrofariasx/dockernativemanager"
+          url="https://github.com/byander/dockernativemanager"
           license=('MIT')
           depends=(${ARCH_DEPENDS_PKGBUILD})
           options=('!strip')
@@ -255,3 +255,43 @@ jobs:
           tar -C dist-targz -czf "$TAR_GZ" docker-native-manager LICENSE
 
           gh release upload "$TAG" "$TAR_GZ" --clobber
+
+  build-windows:
+    needs: release
+    if: needs.release.outputs.new_tag != ''
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.new_tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri App (Windows)
+        run: pnpm tauri build
+
+      - name: Upload Windows Installers to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.release.outputs.new_tag }}"
+          $bundleDir = "src-tauri\target\release\bundle"
+          Get-ChildItem "$bundleDir\msi\*", "$bundleDir\nsis\*" -File | ForEach-Object {
+            gh release upload $tag $_.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
