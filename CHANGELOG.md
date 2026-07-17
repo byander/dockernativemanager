@@ -1,3 +1,10 @@
+# [1.12.0-beta.3](https://github.com/pedrofariasx/dockernativemanager/compare/v1.12.0-beta.2...v1.12.0-beta.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* build do Tauri no mesmo workflow do semantic-release ([7eb1053](https://github.com/pedrofariasx/dockernativemanager/commit/7eb1053ee2e28a15b64ee46a683e3657187470dc))
+
 # [1.12.0-beta.2](https://github.com/pedrofariasx/dockernativemanager/compare/v1.12.0-beta.1...v1.12.0-beta.2) (2026-07-17)
 
 
