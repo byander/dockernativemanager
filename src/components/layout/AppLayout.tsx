@@ -41,6 +41,7 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pathname } = useLocation();
   const { isConnected } = useDocker();
+  const lastPointerRef = useRef(0);
 
   const handleResizeDrag = useCallback(async (direction: ResizeDirection, e: React.PointerEvent) => {
     e.preventDefault();
@@ -114,20 +115,40 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden relative">
         {/* Full Header Drag Handle */}
         <div
-          data-tauri-drag-region
           className="h-12 border-b border-border/50 bg-background/50 flex items-center justify-between px-4 select-none shrink-0 cursor-default backdrop-blur-md"
-          onDoubleClick={async () => {
-            await getCurrentWindow()[isMaximized ? 'unmaximize' : 'maximize']();
-          }}
           onPointerDown={async (e) => {
-            // Only drag on left click and avoid triggering on buttons
-            if (e.buttons === 1 && (e.target as HTMLElement).closest('button') === null) {
-              try {
-                await getCurrentWindow().startDragging();
-              } catch (err) {
-                console.error("Failed to start dragging", err);
-              }
+            if (e.button !== 0 || (e.target as HTMLElement).closest('button') !== null) return;
+
+            const now = Date.now();
+            const isDouble = now - lastPointerRef.current < 300 && lastPointerRef.current !== 0;
+            lastPointerRef.current = now;
+
+            if (isDouble) {
+              await getCurrentWindow()[isMaximized ? 'unmaximize' : 'maximize']();
+              return;
             }
+
+            const startX = e.clientX;
+            const startY = e.clientY;
+            let dragged = false;
+
+            const onMove = (me: PointerEvent) => {
+              if (dragged) return;
+              const dx = Math.abs(me.clientX - startX);
+              const dy = Math.abs(me.clientY - startY);
+              if (dx > 5 || dy > 5) {
+                dragged = true;
+                getCurrentWindow().startDragging().catch(console.error);
+              }
+            };
+
+            const onUp = () => {
+              document.removeEventListener('pointermove', onMove);
+              document.removeEventListener('pointerup', onUp);
+            };
+
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
           }}
         >
           <div className="flex items-center gap-2 pointer-events-none">
