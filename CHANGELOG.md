@@ -1,3 +1,10 @@
+## [1.13.1](https://github.com/pedrofariasx/dockernativemanager/compare/v1.13.0...v1.13.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* reimplementar drag e duplo clique da titlebar via pointerdown ([1c1311a](https://github.com/pedrofariasx/dockernativemanager/commit/1c1311ab6d9a8cc55fc8c68cbdcd296e538c7ad7))
+
 ## [1.13.1-beta.1](https://github.com/pedrofariasx/dockernativemanager/compare/v1.13.0...v1.13.1-beta.1) (2026-07-17)
 
 
