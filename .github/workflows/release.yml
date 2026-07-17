@@ -1,8 +1,6 @@
-name: Release Build
+name: Release Build (Manual)
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -17,18 +15,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/checkout@v7
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ inputs.tag }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -59,7 +48,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ inputs.tag }}"
           BUNDLE_DIR="src-tauri/target/release/bundle"
 
           for dir in appimage deb rpm; do
@@ -72,7 +61,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ inputs.tag }}"
           mkdir -p dist-arch
 
           ARCH_DEPENDS=('cairo' 'gdk-pixbuf2' 'glib2' 'gtk3' 'hicolor-icon-theme' 'libsoup3' 'webkit2gtk-4.1')
@@ -203,7 +192,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${{ inputs.tag }}"
           mkdir -p dist-targz
 
           BIN_PATH="src-tauri/target/release/docker-native-manager"

@@ -10,12 +10,19 @@ permissions:
   pull-requests: write
 
 jobs:
-  semantic-release:
+  release:
     runs-on: ubuntu-22.04
+    outputs:
+      new_tag: ${{ steps.new-tag.outputs.tag }}
+
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Get current tag
+        id: current-tag
+        run: echo "tag=$(git describe --tags --abbrev=0 2>/dev/null || echo 'none')" >> "$GITHUB_OUTPUT"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -33,3 +40,218 @@ jobs:
         run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect new tag
+        id: new-tag
+        run: |
+          PREV="${{ steps.current-tag.outputs.tag }}"
+          NEW="$(git describe --tags --abbrev=0 2>/dev/null || echo 'none')"
+          if [ "$PREV" != "$NEW" ]; then
+            echo "tag=$NEW" >> "$GITHUB_OUTPUT"
+            echo "New release detected: $NEW"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "No new release"
+          fi
+
+  build:
+    needs: release
+    if: needs.release.outputs.new_tag != ''
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.new_tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev pkg-config fakeroot rpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri App
+        run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: Upload AppImage, deb, rpm to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.release.outputs.new_tag }}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+
+          for dir in appimage deb rpm; do
+            for f in "$BUNDLE_DIR/$dir/"*; do
+              [ -f "$f" ] && gh release upload "$TAG" "$f" --clobber
+            done
+          done
+
+      - name: Package for Arch Linux and Upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.release.outputs.new_tag }}"
+          mkdir -p dist-arch
+
+          ARCH_DEPENDS=('cairo' 'gdk-pixbuf2' 'glib2' 'gtk3' 'hicolor-icon-theme' 'libsoup3' 'webkit2gtk-4.1')
+          declare -A ARCH_DEPENDS_SET
+          for dep in "${ARCH_DEPENDS[@]}"; do
+            ARCH_DEPENDS_SET["$dep"]=1
+          done
+
+          add_arch_dep() {
+            local dep="$1"
+            if [ -z "${ARCH_DEPENDS_SET[$dep]+x}" ]; then
+              ARCH_DEPENDS+=("$dep")
+              ARCH_DEPENDS_SET["$dep"]=1
+            fi
+          }
+
+          map_deb_to_arch_dep() {
+            case "$1" in
+              libgtk-3-0) echo "gtk3" ;;
+              libwebkit2gtk-4.1-0) echo "webkit2gtk-4.1" ;;
+              libglib2.0-0) echo "glib2" ;;
+              libgdk-pixbuf-2.0-0) echo "gdk-pixbuf2" ;;
+              libsoup-3.0-0) echo "libsoup3" ;;
+              librsvg2-2) echo "librsvg" ;;
+              libcairo2) echo "cairo" ;;
+              *) echo "" ;;
+            esac
+          }
+
+          DEB_DEPENDS=$(jq -r '.bundle.linux.deb.depends[]? // empty' src-tauri/tauri.conf.json)
+
+          if [ -n "$DEB_DEPENDS" ]; then
+            while IFS= read -r dep; do
+              [ -z "$dep" ] && continue
+              DEP_WITHOUT_VERSION=$(echo "$dep" | sed -E 's/\s*\([^)]*\)//g')
+              DEP_RESOLVED=false
+
+              IFS='|' read -ra DEP_CANDIDATES <<< "$DEP_WITHOUT_VERSION"
+              for DEP_CANDIDATE in "${DEP_CANDIDATES[@]}"; do
+                DEP_NAME=$(echo "$DEP_CANDIDATE" | xargs)
+                [ -z "$DEP_NAME" ] && continue
+
+                MAPPED_DEP=$(map_deb_to_arch_dep "$DEP_NAME")
+                if [ -n "$MAPPED_DEP" ]; then
+                  add_arch_dep "$MAPPED_DEP"
+                  DEP_RESOLVED=true
+                  break
+                fi
+              done
+
+              if [ "$DEP_RESOLVED" = false ]; then
+                echo "Debian dependency '$dep' is not mapped for Arch Linux packaging."
+                echo "Add a mapping in .github/workflows/release.yml (map_deb_to_arch_dep)."
+                exit 1
+              fi
+            done <<< "$DEB_DEPENDS"
+          fi
+
+          ARCH_DEPENDS_PKGBUILD=$(printf "'%s'\n" "${ARCH_DEPENDS[@]}" | paste -sd' ' -)
+
+          PKG_VERSION="${TAG#v}"
+          PKG_VERSION="${PKG_VERSION//-/.}"
+
+          BIN_PATH="src-tauri/target/release/docker-native-manager"
+          if [ ! -f "$BIN_PATH" ]; then
+            echo "Expected binary not found at $BIN_PATH"
+            exit 1
+          fi
+
+          cp "$BIN_PATH" dist-arch/
+          cp src-tauri/icons/icon.png dist-arch/
+
+          cat > dist-arch/docker-native-manager.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Name=Docker Native Manager
+          Exec=docker-native-manager
+          Icon=docker-native-manager
+          Type=Application
+          Categories=Development;
+          DESKTOP
+
+          cat > dist-arch/PKGBUILD << EOF
+          pkgname=dockernativemanager-bin
+          pkgver=${PKG_VERSION}
+          pkgrel=1
+          pkgdesc="A powerful, native, cross-platform GUI for managing Docker environments"
+          arch=('x86_64')
+          url="https://github.com/pedrofariasx/dockernativemanager"
+          license=('MIT')
+          depends=(${ARCH_DEPENDS_PKGBUILD})
+          options=('!strip')
+          provides=('docker-native-manager')
+          conflicts=('docker-native-manager')
+          source=('docker-native-manager'
+                  'icon.png'
+                  'docker-native-manager.desktop')
+          sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+          package() {
+            install -Dm755 "\${srcdir}/docker-native-manager" \
+              "\${pkgdir}/usr/bin/docker-native-manager"
+
+            install -Dm644 "\${srcdir}/icon.png" \
+              "\${pkgdir}/usr/share/icons/hicolor/256x256/apps/docker-native-manager.png"
+
+            install -Dm644 "\${srcdir}/docker-native-manager.desktop" \
+              "\${pkgdir}/usr/share/applications/docker-native-manager.desktop"
+          }
+          EOF
+
+          docker run --rm \
+            -v "$PWD/dist-arch:/build" \
+            -w /build \
+            archlinux:latest bash -c "
+              pacman-key --init && pacman-key --populate archlinux &&
+              pacman -Syu --noconfirm --needed base-devel namcap &&
+              useradd -m builduser &&
+              echo 'builduser ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers &&
+              chown -R builduser:builduser /build &&
+              su - builduser -c 'cd /build && makepkg -s --noconfirm' &&
+              namcap *.pkg.tar.zst || true
+            "
+
+          ARCH_PKG=$(ls dist-arch/*.pkg.tar.zst)
+          gh release upload "$TAG" "$ARCH_PKG" --clobber
+
+      - name: Package tar.gz and Upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.release.outputs.new_tag }}"
+          mkdir -p dist-targz
+
+          BIN_PATH="src-tauri/target/release/docker-native-manager"
+          if [ ! -f "$BIN_PATH" ]; then
+            echo "Expected binary not found at $BIN_PATH"
+            exit 1
+          fi
+
+          PKG_VERSION="${TAG#v}"
+
+          cp "$BIN_PATH" dist-targz/
+          cp LICENSE dist-targz/
+
+          TAR_GZ="Docker.Native.Manager_${PKG_VERSION}_amd64.tar.gz"
+          tar -C dist-targz -czf "$TAR_GZ" docker-native-manager LICENSE
+
+          gh release upload "$TAG" "$TAR_GZ" --clobber
