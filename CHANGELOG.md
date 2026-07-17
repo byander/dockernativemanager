@@ -1,3 +1,10 @@
+# [1.12.0-beta.2](https://github.com/pedrofariasx/dockernativemanager/compare/v1.12.0-beta.1...v1.12.0-beta.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* adicionar @semantic-release/github e corrigir disparo do release build ([0fff974](https://github.com/pedrofariasx/dockernativemanager/commit/0fff97494260a2eaabd1c6c1669b4af6f0a8667f))
+
 # [1.12.0-beta.1](https://github.com/pedrofariasx/dockernativemanager/compare/v1.11.0...v1.12.0-beta.1) (2026-07-17)
 
 
