@@ -139,9 +139,9 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
               if (dx > 5 || dy > 5) {
                 dragged = true;
                 getCurrentWindow().startDragging().catch(console.error);
+                onUp();
               }
             };
-
             const onUp = () => {
               document.removeEventListener('pointermove', onMove);
               document.removeEventListener('pointerup', onUp);
