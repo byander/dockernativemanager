@@ -26,6 +26,20 @@ A modern, native, and blazing-fast desktop application to manage your Docker env
 
 ## 🚀 Getting Started
 
+### ⚠️ Docker Permissions (Required)
+
+This application connects directly to the Docker daemon (via `/var/run/docker.sock`), so **your user must be in the `docker` group** — otherwise the app won't be able to list or manage your containers/images, regardless of how you installed it (`.deb`, `.rpm`, AppImage, or built from source).
+
+If you can't run `docker run hello-world` without `sudo`, set it up first:
+
+```bash
+sudo groupadd docker
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+Log out and back in (or restart your VM, if you're using one) for the change to take full effect. Full details in the [official Docker post-install guide](https://docs.docker.com/engine/install/linux-postinstall/).
+
 ### Prerequisites
 
 - Node.js (`v20` or higher recommended)
